@@ -1,173 +1,157 @@
 import sys
 from pathlib import Path
-from datetime import datetime
-import subprocess
+import json
 
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
 
 
-from tools.file_tools import write_file, list_files
+from langchain_ollama import ChatOllama
 
 
+from tools.file_tools import (
+    list_files,
+    read_file,
+    write_file
+)
+
+from agents.tech_stack_utils import format_stack_for_prompt
 from memory import (
-    add_change
+    add_task,
+    load_state,
+    get_locked_stack
 )
 
 
 
 
+llm = ChatOllama(
+    model="qwen2.5-coder:7b",
+    temperature=0,
+    num_ctx=8192
+)
 
-def run_git(command):
 
+
+
+SYSTEM = """
+
+You are a Git Manager Agent.
+
+Role:
+Manage version control and project checkpoints.
+
+Responsibilities:
+
+- Create commits
+- Track changes
+- Manage versions
+- Create changelogs
+- Document milestones
+
+Output:
+Create version control artifacts and documentation.
+
+Return ONLY JSON.
+
+"""
+
+
+
+
+def clean_json(text):
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
+    return text.strip()
+
+
+def execute(action):
     try:
-
-        result = subprocess.run(
-
-            command,
-
-            cwd=ROOT,
-
-            capture_output=True,
-
-            text=True
-
-        )
-
-
-        return {
-
-            "stdout": result.stdout,
-
-            "stderr": result.stderr,
-
-            "code": result.returncode
-
-        }
-
-
+        data = json.loads(clean_json(action))
     except Exception as e:
+        return f"JSON ERROR: {e}"
 
+    if isinstance(data, list):
+        results = []
+        for item in data:
+            results.append(execute(json.dumps(item)))
+        return "\n".join(results)
 
-        return {
+    name = data.get("name")
+    args = data.get("arguments", {})
 
-            "error": str(e)
+    if name == "write_file":
+        return write_file.invoke(args)
 
-        }
-
-
-
-
-
-
+    return "Unknown action"
 
 
 def git_manager_agent(task):
 
+    print("\nGIT MANAGER TASK:", task)
 
-    print("\nGIT MANAGER AGENT")
+    try:
+        files = list_files.invoke({})
+    except:
+        files = "No files"
 
+    try:
+        memory = load_state()
+    except:
+        memory = {}
 
+    locked_stack = get_locked_stack()
+    stack_prompt = format_stack_for_prompt(locked_stack)
 
-    files = list_files.invoke({})
+    prompt = f"""
 
+{SYSTEM}
 
+{stack_prompt}
 
-    report=f"""
-# Git Management Report
-
-
-## Task
-
-{task}
-
-
-## Project Files
+CURRENT FILES:
 
 {files}
 
+PROJECT MEMORY:
 
+{json.dumps(memory, indent=4, ensure_ascii=False)}
 
-## Git Status
+GIT TASK:
 
-"""
+{task}
 
-
-    status = run_git(
-
-        [
-            "git",
-            "status"
-        ]
-
-    )
-
-
-    report += str(status)
-
-
-
-    report += """
-
-
-
-## Recommendations
-
-- Create checkpoints before major changes.
-- Use meaningful commit messages.
-- Keep history clean.
+Manage version control and create documentation.
+Return changelog and version files as JSON write_file actions.
 
 """
 
+    response = llm.invoke(prompt)
+
+    print("\nMODEL RESPONSE:")
+    print(response.content)
+
+    result = execute(response.content)
+
+    try:
+        add_task(task)
+    except:
+        pass
+
+    return result
 
 
-    write_file.invoke(
+if __name__ == "__main__":
 
-        {
+    while True:
 
-            "path":
+        task = input("\nGit Manager Task: ")
 
-            "docs/git_report.md",
+        if task.lower() == "exit":
+            break
 
+        result = git_manager_agent(task)
 
-            "content":
-
-            report
-
-        }
-
-    )
-
-
-
-    add_change(
-
-        "Git manager generated report"
-
-    )
-
-
-
-    return "Git management report created"
-
-
-
-
-
-
-
-
-
-if __name__=="__main__":
-
-
-    print(
-
-        git_manager_agent(
-
-            "Check repository"
-
-        )
-
-    )
+        print("\nRESULT:")
+        print(result)
