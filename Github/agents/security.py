@@ -16,415 +16,145 @@ from tools.file_tools import (
     write_file
 )
 
-
-from memory import add_issue
-
+from agents.tech_stack_utils import format_stack_for_prompt
+from memory import (
+    add_task,
+    load_state,
+    get_locked_stack
+)
 
 
 
 
 llm = ChatOllama(
     model="qwen2.5-coder:7b",
-    temperature=0
+    temperature=0,
+    num_ctx=8192
 )
-
-
 
 
 
 
 SYSTEM = """
 
-You are a Senior Cyber Security Engineer Agent.
+You are a Security Agent.
 
+Role:
+Analyze and improve security in the project.
 
-Your responsibilities:
+Responsibilities:
 
+- Check for authentication/authorization
+- Find security vulnerabilities
+- Review secrets management
+- Verify encryption usage
+- Check input validation
+- Review API security
 
-- Review any software project.
-- Find security vulnerabilities.
-- Analyze source code.
-- Check authentication problems.
-- Check authorization problems.
-- Check unsafe input handling.
-- Check secrets exposure.
-- Check dependency risks.
-- Suggest security improvements.
-
-
-
-You DO NOT modify source code.
-
-
-You create security reports.
-
-
-
-Rules:
+Output:
+Create security assessment and improvements.
 
 Return ONLY JSON.
 
-No markdown outside JSON.
-
-
-
-Available actions:
-
-
-read_file:
-
-
-{
-"name":"read_file",
-"arguments":{
-"path":"file.py"
-}
-}
-
-
-
-
-write_file:
-
-
-{
-"name":"write_file",
-"arguments":{
-"path":"docs/security_report.md",
-"content":"security report"
-}
-}
-
-
-
 """
-
-
-
-
-
 
 
 
 
 def clean_json(text):
-
-
-    text=text.replace(
-        "```json",
-        ""
-    )
-
-
-    text=text.replace(
-        "```",
-        ""
-    )
-
-
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
     return text.strip()
 
 
-
-
-
-
-
 def execute(action):
-
-
     try:
-
-        data=json.loads(
-            clean_json(action)
-        )
-
-
+        data = json.loads(clean_json(action))
     except Exception as e:
-
         return f"JSON ERROR: {e}"
 
-
-
-
-    if isinstance(data,list):
-
-        results=[]
-
-
+    if isinstance(data, list):
+        results = []
         for item in data:
-
-            results.append(
-
-                execute(
-                    json.dumps(item)
-                )
-
-            )
-
-
+            results.append(execute(json.dumps(item)))
         return "\n".join(results)
 
+    name = data.get("name")
+    args = data.get("arguments", {})
 
-
-
-
-    name=data.get(
-        "name"
-    )
-
-
-    args=data.get(
-        "arguments",
-        {}
-    )
-
-
-
-
-
-    if name=="read_file":
-
-
-        return read_file.invoke(
-            args
-        )
-
-
-
-    elif name=="write_file":
-
-
-        return write_file.invoke(
-            args
-        )
-
-
+    if name == "write_file":
+        return write_file.invoke(args)
 
     return "Unknown action"
 
 
-
-
-
-
-
-
-
-
-
 def security_agent(task):
 
+    print("\nSECURITY TASK:", task)
 
-    files=list_files.invoke({})
+    try:
+        files = list_files.invoke({})
+    except:
+        files = "No files"
 
+    try:
+        memory = load_state()
+    except:
+        memory = {}
 
+    locked_stack = get_locked_stack()
+    stack_prompt = format_stack_for_prompt(locked_stack)
 
-    project_content=""
-
-
-
-
-    if files and files!="Project is empty":
-
-
-        for file in files.splitlines():
-
-
-            try:
-
-                content=read_file.invoke(
-                    {
-                        "path":file
-                    }
-                )
-
-
-                project_content += f"""
-
-=====================
-
-FILE:
-
-{file}
-
-
-CONTENT:
-
-{content}
-
-
-=====================
-
-"""
-
-
-            except:
-
-                pass
-
-
-
-
-
-
-
-    prompt=f"""
+    prompt = f"""
 
 {SYSTEM}
 
+{stack_prompt}
 
-
-Project Files:
+CURRENT FILES:
 
 {files}
 
+PROJECT MEMORY:
 
+{json.dumps(memory, indent=4, ensure_ascii=False)}
 
-Project Content:
-
-{project_content}
-
-
-
-Security Task:
+SECURITY TASK:
 
 {task}
 
+Analyze and improve security.
+Create security assessment document.
 
-
-Create a complete security report.
-
-
-
-Report structure:
-
-
-# Security Report
-
-
-## Security Summary
-
-
-## Vulnerabilities Found
-
-
-For each issue include:
-
-
-- Severity
-- Location
-- Description
-- Risk
-- Recommendation
-
-
-
-## Authentication Issues
-
-
-## Authorization Issues
-
-
-## Data Protection
-
-
-## Dependency Risks
-
-
-## Security Improvements
-
-
-
-Return ONLY JSON:
-
-
-{{
-"name":"write_file",
-"arguments":{{
-"path":"docs/security_report.md",
-"content":"security report"
-}}
-}}
-
+Return JSON with write_file action.
 
 """
 
+    response = llm.invoke(prompt)
 
-
-
-    response=llm.invoke(
-        prompt
-    )
-
-
-    print("\nSECURITY MODEL:")
-
+    print("\nMODEL RESPONSE:")
     print(response.content)
 
-
-
-
-
-    result=execute(
-        response.content
-    )
-
-
+    result = execute(response.content)
 
     try:
-
-        add_issue(
-            {
-                "type":"security_review",
-                "result":result
-            }
-        )
-
-
+        add_task(task)
     except:
-
         pass
-
-
 
     return result
 
 
-
-
-
-
-
-
-
-
-if __name__=="__main__":
-
+if __name__ == "__main__":
 
     while True:
 
+        task = input("\nSecurity Task: ")
 
-        task=input(
-            "\nSecurity Task: "
-        )
-
-
-        if task.lower()=="exit":
-
+        if task.lower() == "exit":
             break
 
+        result = security_agent(task)
 
-
-
-        result=security_agent(
-            task
-        )
-
-
-        print(
-            "\nRESULT:"
-        )
-
-
+        print("\nRESULT:")
         print(result)
