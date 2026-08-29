@@ -1,11 +1,13 @@
 import sys
 from pathlib import Path
 import json
-from datetime import datetime
 
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
+
+
+from langchain_ollama import ChatOllama
 
 
 from tools.file_tools import (
@@ -14,79 +16,145 @@ from tools.file_tools import (
     write_file
 )
 
-
+from agents.tech_stack_utils import format_stack_for_prompt
 from memory import (
-    add_issue,
-    add_change
+    add_task,
+    load_state,
+    get_locked_stack
 )
 
 
 
-def debug_agent(task):
+
+llm = ChatOllama(
+    model="qwen2.5-coder:7b",
+    temperature=0,
+    num_ctx=8192
+)
 
 
-    print("\nDEBUG AGENT")
 
 
-    files = list_files.invoke({})
+SYSTEM = """
 
+You are a Debug Agent.
 
-    report = f"""
-# Debug Report
+Role:
+Fix bugs and errors in the codebase.
 
+Responsibilities:
 
-## Task
+- Analyze error messages
+- Find root causes
+- Implement fixes
+- Test solutions
+- Update code
 
-{task}
+Output:
+Create fixed code files.
 
-
-## Current Files
-
-{files}
-
-
-## Analysis
-
-Debug agent analyzed the project.
-
-Further investigation required based on test failures.
-
-
-## Recommendation
-
-Run tests and review reported issues.
+Return ONLY JSON.
 
 """
 
 
-    write_file.invoke(
-
-        {
-            "path":
-            "docs/debug_report.md",
-
-            "content":
-            report
-        }
-
-    )
 
 
-    add_issue(
-
-        {
-            "debug_task":
-            task
-        }
-
-    )
+def clean_json(text):
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
+    return text.strip()
 
 
-    add_change(
+def execute(action):
+    try:
+        data = json.loads(clean_json(action))
+    except Exception as e:
+        return f"JSON ERROR: {e}"
 
-        "Debug analysis completed"
+    if isinstance(data, list):
+        results = []
+        for item in data:
+            results.append(execute(json.dumps(item)))
+        return "\n".join(results)
 
-    )
+    name = data.get("name")
+    args = data.get("arguments", {})
+
+    if name == "write_file":
+        return write_file.invoke(args)
+    elif name == "read_file":
+        from tools.file_tools import read_file as read_file_tool
+        return read_file_tool.invoke(args)
+
+    return "Unknown action"
 
 
-    return "Debug report created"
+def debug_agent(task):
+
+    print("\nDEBUG TASK:", task)
+
+    try:
+        files = list_files.invoke({})
+    except:
+        files = "No files"
+
+    try:
+        memory = load_state()
+    except:
+        memory = {}
+
+    locked_stack = get_locked_stack()
+    stack_prompt = format_stack_for_prompt(locked_stack)
+
+    prompt = f"""
+
+{SYSTEM}
+
+{stack_prompt}
+
+CURRENT FILES:
+
+{files}
+
+PROJECT MEMORY:
+
+{json.dumps(memory, indent=4, ensure_ascii=False)}
+
+DEBUG TASK:
+
+{task}
+
+Debug and fix the issues.
+Return fixed code files as JSON write_file actions.
+
+"""
+
+    response = llm.invoke(prompt)
+
+    print("\nMODEL RESPONSE:")
+    print(response.content)
+
+    result = execute(response.content)
+
+    try:
+        add_task(task)
+    except:
+        pass
+
+    return result
+
+
+if __name__ == "__main__":
+
+    while True:
+
+        task = input("\nDebug Task: ")
+
+        if task.lower() == "exit":
+            break
+
+        result = debug_agent(task)
+
+        print("\nRESULT:")
+        print(result)
