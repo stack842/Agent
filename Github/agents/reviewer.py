@@ -16,363 +16,148 @@ from tools.file_tools import (
     write_file
 )
 
+from agents.tech_stack_utils import format_stack_for_prompt
+from memory import (
+    add_task,
+    load_state,
+    get_locked_stack
+)
+
+
 
 
 llm = ChatOllama(
     model="qwen2.5-coder:7b",
-    temperature=0
+    temperature=0,
+    num_ctx=8192
 )
-
 
 
 
 
 SYSTEM = """
 
-You are a Senior Software Code Review Agent.
+You are a Code Reviewer Agent.
 
-Your job:
+Role:
+Review code quality, find bugs, check maintainability.
 
-- Review any software project.
-- Analyze source code.
-- Find bugs.
-- Find security problems.
-- Find architecture issues.
-- Find performance problems.
-- Suggest improvements.
+Responsibilities:
 
-You DO NOT modify source code.
+- Examine existing code
+- Find logical errors
+- Check code style
+- Review security concerns
+- Verify architecture compliance
+- Suggest improvements
 
-You ONLY create review reports.
+Output:
+Create a detailed review document.
 
-
-
-Rules:
-
-- Return ONLY JSON.
-- No markdown.
-- No explanations.
-
-
+Return ONLY JSON.
 
 Available actions:
 
-
-read_file:
-
-{
-"name":"read_file",
-"arguments":{
-"path":"file/path"
-}
-}
-
-
-
-write_file:
-
-{
-"name":"write_file",
-"arguments":{
-"path":"docs/review.md",
-"content":"review report"
-}
-}
-
+write_file: Create review document
 
 """
-
-
-
 
 
 
 
 def clean_json(text):
-
-    text=text.replace(
-        "```json",
-        ""
-    )
-
-    text=text.replace(
-        "```",
-        ""
-    )
-
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
     return text.strip()
 
 
-
-
-
-
-
 def execute(action):
-
-
     try:
-
-        data=json.loads(
-            clean_json(action)
-        )
-
-
+        data = json.loads(clean_json(action))
     except Exception as e:
-
         return f"JSON ERROR: {e}"
 
-
-
-    # پشتیبانی از چند action
-
-    if isinstance(data,list):
-
-        results=[]
-
+    if isinstance(data, list):
+        results = []
         for item in data:
-
-            results.append(
-                execute(
-                    json.dumps(item)
-                )
-            )
-
+            results.append(execute(json.dumps(item)))
         return "\n".join(results)
 
+    name = data.get("name")
+    args = data.get("arguments", {})
 
-
-
-    name=data.get("name")
-
-    args=data.get(
-        "arguments",
-        {}
-    )
-
-
-
-    if name=="read_file":
-
-        return read_file.invoke(
-            args
-        )
-
-
-
-    elif name=="write_file":
-
-        return write_file.invoke(
-            args
-        )
-
-
-
-    elif name=="list_files":
-
-        return list_files.invoke(
-            {}
-        )
-
+    if name == "write_file":
+        return write_file.invoke(args)
 
     return "Unknown action"
 
 
-
-
-
-
-
-
-
 def reviewer_agent(task):
 
+    print("\nREVIEWER TASK:", task)
 
-    files=list_files.invoke({})
+    try:
+        files = list_files.invoke({})
+    except:
+        files = "No files"
 
+    try:
+        memory = load_state()
+    except:
+        memory = {}
 
+    locked_stack = get_locked_stack()
+    stack_prompt = format_stack_for_prompt(locked_stack)
 
-    print("\nFILES REVIEW:")
-
-    print(files)
-
-
-
-
-    # خواندن همه فایل های پروژه
-
-    project_content=""
-
-
-    if files != "Project is empty":
-
-
-        for file in files.splitlines():
-
-            try:
-
-                content=read_file.invoke(
-                    {
-                        "path":file
-                    }
-                )
-
-
-                project_content += f"""
-
-========================
-
-FILE:
-
-{file}
-
-
-CONTENT:
-
-{content}
-
-
-========================
-
-
-"""
-
-
-            except Exception:
-
-                pass
-
-
-
-
-
-    prompt=f"""
+    prompt = f"""
 
 {SYSTEM}
 
+{stack_prompt}
 
-
-Project Files:
+CURRENT FILES:
 
 {files}
 
+PROJECT MEMORY:
 
+{json.dumps(memory, indent=4, ensure_ascii=False)}
 
-Project Content:
-
-{project_content}
-
-
-
-Review Task:
+REVIEW TASK:
 
 {task}
 
+Create a comprehensive code review document.
 
-
-Analyze this project completely.
-
-
-Create a professional review report.
-
-
-The report must contain:
-
-
-# Code Review Report
-
-
-## Project Summary
-
-
-## Files Reviewed
-
-
-## Code Quality
-
-
-## Bugs
-
-
-## Security Issues
-
-
-## Performance Issues
-
-
-## Architecture Issues
-
-
-## Recommendations
-
-
-
-Return ONLY this JSON:
-
-
-{{
-"name":"write_file",
-"arguments":{{
-"path":"docs/review.md",
-"content":"complete review"
-}}
-}}
-
+Return JSON with write_file action.
 
 """
 
+    response = llm.invoke(prompt)
 
-
-    response=llm.invoke(
-        prompt
-    )
-
-
-    print("\nMODEL:")
-
+    print("\nMODEL RESPONSE:")
     print(response.content)
 
+    result = execute(response.content)
 
-
-    result=execute(
-        response.content
-    )
-
+    try:
+        add_task(task)
+    except:
+        pass
 
     return result
 
 
-
-
-
-
-
-
-
-
-
-if __name__=="__main__":
-
+if __name__ == "__main__":
 
     while True:
 
+        task = input("\nReviewer Task: ")
 
-        task=input(
-            "\nReviewer Task: "
-        )
-
-
-        if task.lower()=="exit":
-
+        if task.lower() == "exit":
             break
 
-
-
-        result=reviewer_agent(
-            task
-        )
-
+        result = reviewer_agent(task)
 
         print("\nRESULT:")
-
         print(result)
