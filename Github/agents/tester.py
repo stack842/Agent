@@ -12,9 +12,14 @@ sys.path.append(str(ROOT))
 
 from tools.file_tools import (
     write_file,
-    list_files
+    list_files,
+    get_project_path
 )
 
+from tools.terminal_tools import (
+    run_command_in_project,
+    format_result_for_display
+)
 
 from memory import (
     load_state,
@@ -35,11 +40,12 @@ PROJECT_PATH = ROOT / "project"
 
 def find_python_files():
 
-    files=[]
+    project = get_project_path()
+    files = []
 
-    if PROJECT_PATH.exists():
+    if project.exists():
 
-        for file in PROJECT_PATH.rglob("*.py"):
+        for file in project.rglob("*.py"):
 
             if "__pycache__" not in str(file):
 
@@ -47,7 +53,6 @@ def find_python_files():
 
 
     return files
-
 
 
 
@@ -110,8 +115,6 @@ def run_file(file):
 
 
 
-
-
 # =========================
 # Import Test
 # =========================
@@ -160,8 +163,6 @@ def test_import(file):
             "error":traceback.format_exc()
 
         }
-
-
 
 
 
@@ -230,7 +231,6 @@ def test_classes(file):
                     })
 
                     continue
-
 
 
 
@@ -313,16 +313,14 @@ def test_classes(file):
 
 
 
-
-
 # =========================
-# Run pytest
+# Run pytest - REAL EXECUTION
 # =========================
 
 def run_pytest():
 
-
-    tests_path=PROJECT_PATH / "tests"
+    project = get_project_path()
+    tests_path = project / "tests"
 
 
     if not tests_path.exists():
@@ -331,63 +329,67 @@ def run_pytest():
 
             "status":"SKIPPED",
 
-            "message":"No tests folder"
+            "message":"No tests folder",
+            "exit_code": None,
+            "stdout": "",
+            "stderr": ""
 
         }
 
 
+    # Use real terminal execution (FIX 2)
+    result = run_command_in_project(
+        "pytest tests -v",
+        project_path=str(project),
+        timeout=120
+    )
 
-
-    try:
-
-
-        result=subprocess.run(
-
-            [
-                "pytest",
-                str(tests_path)
-            ],
-
-            capture_output=True,
-
-            text=True,
-
-            timeout=120
-
-        )
+    return {
+        "status": "PASS" if result["success"] else "FAIL",
+        "exit_code": result["exit_code"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "wall_time": result["wall_time"],
+        "error": result.get("error")
+    }
 
 
 
+
+# =========================
+# Run pip install - REAL EXECUTION
+# =========================
+
+def install_dependencies():
+    """
+    Install project dependencies (requirements.txt if exists).
+    Uses real terminal execution.
+    """
+    
+    project = get_project_path()
+    req_file = project / "requirements.txt"
+    
+    if not req_file.exists():
         return {
-
-            "status":
-
-                "PASS"
-                if result.returncode==0
-                else "FAIL",
-
-            "stdout":result.stdout,
-
-            "stderr":result.stderr
-
+            "status": "SKIPPED",
+            "message": "No requirements.txt found",
+            "exit_code": None
         }
-
-
-
-    except Exception as e:
-
-
-        return {
-
-            "status":"ERROR",
-
-            "error":str(e)
-
-        }
-
-
-
-
+    
+    result = run_command_in_project(
+        "pip install -r requirements.txt",
+        project_path=str(project),
+        timeout=300
+    )
+    
+    return {
+        "status": "PASS" if result["success"] else "FAIL",
+        "exit_code": result["exit_code"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "wall_time": result["wall_time"],
+        "error": result.get("error")
+    }
 
 
 
@@ -403,6 +405,20 @@ def create_report(data):
 
 # Software Test Report
 
+
+"""
+
+
+    report+="## Dependency Installation\n\n"
+    
+    install_result = data.get("install", {})
+    report += f"""
+Status: {install_result.get('status', 'UNKNOWN')}
+Exit Code: {install_result.get('exit_code', 'N/A')}
+
+{install_result.get('stderr', install_result.get('message', ''))}
+
+------------------
 
 """
 
@@ -486,12 +502,36 @@ Output:
 
 
 
-    report+="\n## Pytest\n\n"
+    report+="\n## Pytest Results\n\n"
+    
+    pytest_data = data["pytest"]
+    report += f"""
+Status: {pytest_data.get('status', 'UNKNOWN')}
+Exit Code: {pytest_data.get('exit_code', 'N/A')}
+Wall Time: {pytest_data.get('wall_time', 'N/A')}s
 
+"""
+    
+    if pytest_data.get('stdout'):
+        report += f"""
+### Output
+```
+{pytest_data['stdout']}
+```
 
-    report+=str(
-        data["pytest"]
-    )
+"""
+    
+    if pytest_data.get('stderr'):
+        report += f"""
+### Errors
+```
+{pytest_data['stderr']}
+```
+
+"""
+    
+    if pytest_data.get('error'):
+        report += f"\nExecution Error: {pytest_data['error']}\n"
 
 
     return report
@@ -499,11 +539,8 @@ Output:
 
 
 
-
-
-
 # =========================
-# Tester Agent
+# Tester Agent - REAL EXECUTION
 # =========================
 
 def tester_agent(task):
@@ -512,14 +549,17 @@ def tester_agent(task):
     print("\nScanning project...")
 
 
-    files=find_python_files()
+    files = find_python_files()
 
 
 
     if not files:
 
 
-        return "No python files found"
+        return {
+            "status": "blocked",
+            "message": "No python files found"
+        }
 
 
 
@@ -563,56 +603,37 @@ def tester_agent(task):
         )
 
 
+    # Install dependencies first (FIX 3)
+    print("\nInstalling dependencies...")
+    install_result = install_dependencies()
+
+    # Run pytest with REAL execution (FIX 3)
+    print("\nRunning pytest...")
+    pytest_result = run_pytest()
 
 
-    pytest_result=run_pytest()
 
-
-
-    results={
-
-
-        "execution":
-
-        execution,
-
-
-        "imports":
-
-        imports,
-
-
-        "classes":
-
-        classes,
-
-
-        "pytest":
-
-        pytest_result
-
+    results = {
+        "execution": execution,
+        "imports": imports,
+        "classes": classes,
+        "pytest": pytest_result,
+        "install": install_result
     }
 
 
 
 
-    report=create_report(
-        results
-    )
+    report = create_report(results)
 
 
 
 
-    result=write_file.invoke({
+    result = write_file.invoke({
 
-        "path":
+        "path": "docs/test_report.md",
 
-        "docs/test_report.md",
-
-
-        "content":
-
-        report
+        "content": report
 
     })
 
@@ -622,28 +643,37 @@ def tester_agent(task):
     # Memory update
 
 
-    add_test(
-        results
-    )
+    add_test(results)
 
 
 
     for item in execution:
 
 
-        if item["status"]!="PASS":
+        if item["status"] != "PASS":
 
-            add_issue(
-                item
-            )
+            add_issue(item)
+
+    
+    # Determine overall status
+    all_passed = (
+        pytest_result.get("status") == "PASS"
+        and install_result.get("status") in ["PASS", "SKIPPED"]
+        and all(e.get("status") == "PASS" for e in execution)
+    )
+    
+    overall_status = "done" if all_passed else (
+        "blocked" if pytest_result.get("status") == "SKIPPED" 
+        else "failed"
+    )
 
 
-
-    return result
-
-
-
-
+    return {
+        "status": overall_status,
+        "summary": f"Pytest: {pytest_result.get('status')}, Files: {len([e for e in execution if e.get('status') == 'PASS'])}/{len(execution)}",
+        "report_file": "docs/test_report.md",
+        "result": result
+    }
 
 
 
